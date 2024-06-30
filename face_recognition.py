@@ -120,12 +120,12 @@ def alignment_procedure(frame, left_eye, right_eye, box_img):
 
 # task 1: save all images
 def save_faces_detection(save_img_path, frame):
+    """save all images"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cv2.imwrite(os.path.join(save_img_path, 'img_{}.jpg'.format(timestamp)), frame)
 
-# task 2: recognition frame
-def recognition_faces_detection(frame, model, embeddings, names):
-
+def recognition_faces_detection(frame, embeddings, names):
+    """ecognition frame"""
     from retinaface import RetinafaceDetector
     detector2  = RetinafaceDetector(net='mnet', type='cpu').detect_faces
     
@@ -213,14 +213,13 @@ if __name__ == "__main__":
     while cap.isOpened():
         isSuccess, frame = cap.read()
         if isSuccess:
-            # multiprocessing.Array()
             process_1 = multiprocessing.Process(target=save_faces_detection, 
                                                 args=(save_img_path, frame))
             process_1.start()
             process_1.join()
 
             process_2 = multiprocessing.Process(target=recognition_faces_detection, 
-                                                args=(frame, model, embeddings, names))
+                                                args=(frame, embeddings, names))
             process_2.start()
             process_2.join()
 
