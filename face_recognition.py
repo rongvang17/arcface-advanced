@@ -8,6 +8,7 @@ import math
 import os
 import multiprocessing
 import queue
+import argparse
 
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
@@ -120,22 +121,18 @@ def alignment_procedure(frame, left_eye, right_eye, box_img):
 
 # task 1: save all images
 def save_faces_detection(save_img_path, frame):
-    """save all images"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cv2.imwrite(os.path.join(save_img_path, 'img_{}.jpg'.format(timestamp)), frame)
 
-def recognition_faces_detection(frame, embeddings, names):
-    """ecognition frame"""
-    from retinaface import RetinafaceDetector
-    detector2  = RetinafaceDetector(net='mnet', type='cpu').detect_faces
+# task 2: recognition frame
+def recognition_faces_detection(save_detection_img_path, frame):
+
+    global detector, model, embeddings, names
+    prev_frame_time = 0
     
     print("prepare recognition processing......")
-    # print(detector2)
-    frame = cv2.resize(frame,(480, 480), interpolation=cv2.INTER_AREA)
-    print(frame)
-    cv2.imshow('Face Detection', frame)
-    bounding_boxes, landmarks = detector2(frame)
-    print(bounding_boxes)
+    pro_frame = cv2.resize(frame,(480, 480), interpolation=cv2.INTER_AREA)
+    bounding_boxes, landmarks = detector(pro_frame)
     if bounding_boxes is not None:
         for idx_row in range(bounding_boxes.shape[0]):
             box_img = (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1]),
@@ -145,33 +142,32 @@ def recognition_faces_detection(frame, embeddings, names):
             if check_shape:
                 left_eye = ((int(landmarks[idx_row,0]), int(landmarks[idx_row, 5])))
                 right_eye = ((int(landmarks[idx_row,1]), int(landmarks[idx_row, 6])))
-                rotated_image = alignment_procedure(frame, left_eye, right_eye, box_img)
+                rotated_image = alignment_procedure(pro_frame, left_eye, right_eye, box_img)
                 face = extract_face(rotated_image)
                 if face is not None:
                     idx, score = inference(face, embeddings, model)
+                    print('idx;', idx, 'score:', score)
                     if idx != -1:
-                        frame = cv2.rectangle(frame, (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
-                                            (int(bounding_boxes[idx_row,2]), int(bounding_boxes[idx_row,3])), (0,0,255), 6)
-                        frame = cv2.putText(frame, '{:.2f}'.format(score) + names[idx], 
-                                            (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
-                                            cv2.FONT_HERSHEY_DUPLEX, 2, (0,255,0), 2, cv2.LINE_8)
+                        print('name face:', names[idx])
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        cv2.imwrite(os.path.join(save_detection_img_path, 'detection_img_{}.jpg'.format(timestamp)), face)
+                        # pro_frame = cv2.rectangle(pro_frame, (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
+                        #                     (int(bounding_boxes[idx_row,2]), int(bounding_boxes[idx_row,3])), (0,0,255), 6)
+                        # pro_frame = cv2.putText(pro_frame, '{:.2f}'.format(score) + names[idx], 
+                        #                     (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
+                        #                     cv2.FONT_HERSHEY_DUPLEX, 2, (0,255,0), 2, cv2.LINE_8)
                     else:
-                        frame = cv2.rectangle(frame, (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
-                                            (int(bounding_boxes[idx_row,2]), int(bounding_boxes[idx_row,3])), (0,0,255), 6)
-                        frame = cv2.putText(frame,'Unknown', (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
-                                            cv2.FONT_HERSHEY_DUPLEX, 2, (0,255,0), 2, cv2.LINE_8)
+                        pass
+                        # pro_frame = cv2.rectangle(pro_frame, (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
+                        #                     (int(bounding_boxes[idx_row,2]), int(bounding_boxes[idx_row,3])), (0,0,255), 6)
+                        # pro_frame = cv2.putText(pro_frame,'Unknown', (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
+                        #                     cv2.FONT_HERSHEY_DUPLEX, 2, (0,255,0), 2, cv2.LINE_8)
                     
             new_frame_time = time.time()
             fps = 1/(new_frame_time-prev_frame_time)
             prev_frame_time = new_frame_time
             fps = str(int(fps))
             print('fps', fps)
-            cv2.putText(frame, fps, (7, 70), cv2.FONT_HERSHEY_DUPLEX, 3, (100, 255, 0), 3, cv2.LINE_AA)
-
-            cv2.imshow('Face Recognition', frame)
-            # print('okokok')
-            if cv2.waitKey(1)&0xFF == 27:
-                break
 
 
 def detection_faces(frame, detector):
@@ -179,6 +175,15 @@ def detection_faces(frame, detector):
     return bounding_boxes, landmarks
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser(description='save detection images')
+    parser.add_argument('--save_img_path', help='save all img')
+    parser.add_argument('--save_detection_img_path', help='save all recognition img')
+
+    args = parser.parse_args()
+    SAVE_IMG_PATH = args.save_img_path
+    SAVE_DETECTION_IMG_PATH = args.save_detection_img_path
+
     prev_frame_time = 0
     new_frame_time = 0
 
@@ -187,11 +192,12 @@ if __name__ == "__main__":
     print(device)
 
     # detection module
+    global detector
     detector  = RetinafaceDetector(net='mnet', type='cpu').detect_faces
-    detector2  = RetinafaceDetector(net='mnet', type='cpu')
 
     # recognition module
     # face_rec = ArcFace.ArcFace()
+    global model
     model = Backbone(num_layers=50, drop_ratio=0.5, mode='ir_se')
     weights = torch.load("InsightFace_Pytorch/pretrained/model_ir_se50.pth", 
                          map_location=torch.device('cpu'))
@@ -200,28 +206,30 @@ if __name__ == "__main__":
     model.eval()
 
     # set frame size
-    cap = cv2.VideoCapture(2)
+    cap = cv2.VideoCapture(0)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT,640)
 
     # load faces_list
     embeddings_path = 'embeddings.csv'
     names_path = 'names.csv'
+    global embeddings, names
     embeddings, names = load_faceslist(embeddings_path, names_path)
-    save_img_path = '/home/minhthanh/directory_env/my_env/arcFace-retinaFace/faces_dataset/'
 
+    # inference
     while cap.isOpened():
         isSuccess, frame = cap.read()
         if isSuccess:
-            process_1 = multiprocessing.Process(target=save_faces_detection, 
-                                                args=(save_img_path, frame))
-            process_1.start()
-            process_1.join()
+            thread_1 = threading.Thread(target=save_faces_detection,
+                                        args=(SAVE_IMG_PATH, frame))
+            thread_2 = threading.Thread(target=recognition_faces_detection,
+                                        args=(SAVE_DETECTION_IMG_PATH, frame))
 
-            process_2 = multiprocessing.Process(target=recognition_faces_detection, 
-                                                args=(frame, embeddings, names))
-            process_2.start()
-            process_2.join()
+            thread_1.start()
+            thread_2.start()
+
+            thread_1.join()
+            thread_2.join()
 
     cap.release()
     cv2.destroyAllWindows()
