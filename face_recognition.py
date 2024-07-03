@@ -9,18 +9,23 @@ import os
 import multiprocessing
 import queue
 import argparse
+import warnings
 
 from PIL import Image
 from sklearn.metrics.pairwise import cosine_similarity
-from facenet_pytorch import MTCNN, InceptionResnetV1, fixed_image_standardization
+from facenet_pytorch import MTCNN, InceptionResnetV1, fixed_image_standardization # ignore
 from torchvision import transforms
 from retinaface import RetinafaceDetector
 from retinaface.align_faces import warp_and_crop_face, get_reference_facial_points
-from arcface import ArcFace
+from arcface import ArcFace # ignore
 from tqdm import tqdm
 import torchvision.transforms as transforms
-from model import Backbone
+from recognition_model import Backbone
 from datetime import datetime
+from AgeNet.models import Model
+
+warnings.simplefilter("ignore") # ignore all warnings
+
 
 frame_size = (640,640)
 IMG_PATH = './data/test_images'
@@ -50,7 +55,7 @@ def load_faceslist(embeddings_path, names_path):
     return embeddings, names
 
 # check face matching
-def inference(face, embeddings, model):
+def inference(face, embeddings, recognition_model):
     # embeds = []
 
     # old
@@ -60,7 +65,7 @@ def inference(face, embeddings, model):
     pil_img = Image.fromarray(face)
     # new
     with torch.no_grad():
-        a = model(trans(pil_img).unsqueeze(0))
+        a = recognition_model(trans(pil_img).unsqueeze(0))
         emb1 = a[0].numpy()
         
     cosin_arr = []
@@ -121,40 +126,41 @@ def alignment_procedure(frame, left_eye, right_eye, box_img):
 
 # task 1: save all images
 def save_faces_detection(save_img_path, frame):
+    """save all images"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     cv2.imwrite(os.path.join(save_img_path, 'img_{}.jpg'.format(timestamp)), frame)
 
 # task 2: recognition frame
 def recognition_faces_detection(save_detection_img_path, frame):
-
-    global detector, model, embeddings, names
-    prev_frame_time = 0
+    """recognition faces"""
+    global detector, recognition_model, embeddings, names
     
-    print("prepare recognition processing......")
-    pro_frame = cv2.resize(frame,(480, 480), interpolation=cv2.INTER_AREA)
+    # print("prepare recognition processing......")
+    pro_frame = cv2.resize(frame, (480, 480), interpolation=cv2.INTER_AREA)
     bounding_boxes, landmarks = detector(pro_frame)
     if bounding_boxes is not None:
         for idx_row in range(bounding_boxes.shape[0]):
             box_img = (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1]),
                         int(bounding_boxes[idx_row,2]), int(bounding_boxes[idx_row,3]))
             check_shape = (box_img[2] - box_img[0]) >=100 and (box_img[3] - box_img[1]) >= 100
-            print(check_shape)
+            # print(check_shape)
             if check_shape:
                 left_eye = ((int(landmarks[idx_row,0]), int(landmarks[idx_row, 5])))
                 right_eye = ((int(landmarks[idx_row,1]), int(landmarks[idx_row, 6])))
                 rotated_image = alignment_procedure(pro_frame, left_eye, right_eye, box_img)
-                face = extract_face(rotated_image)
-                if face is not None:
-                    idx, score = inference(face, embeddings, model)
+                face_recognition = extract_face(rotated_image)
+                gender, age = face_attributes(rotated_image)
+                if face_recognition is not None:
+                    idx, score = inference(face_recognition, embeddings, recognition_model)
                     print('idx;', idx, 'score:', score)
                     if idx != -1:
-                        print('name face:', names[idx])
+                        print('name face: {} - gender: {} - age: {}'.format(names[idx], gender, age))
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        cv2.imwrite(os.path.join(save_detection_img_path, 'detection_img_{}.jpg'.format(timestamp)), face)
+                        cv2.imwrite(os.path.join(save_detection_img_path, '{}_{}_{}_{}.jpg'.format(names[idx], gender, age, timestamp)), face_recognition)
                         # pro_frame = cv2.rectangle(pro_frame, (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
                         #                     (int(bounding_boxes[idx_row,2]), int(bounding_boxes[idx_row,3])), (0,0,255), 6)
-                        # pro_frame = cv2.putText(pro_frame, '{:.2f}'.format(score) + names[idx], 
-                        #                     (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
+                        # pro_frame = cv2.putText(pro_frame, '{:.2f}'.format(score) + names[idx],
+                        #                     (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])),
                         #                     cv2.FONT_HERSHEY_DUPLEX, 2, (0,255,0), 2, cv2.LINE_8)
                     else:
                         pass
@@ -163,19 +169,39 @@ def recognition_faces_detection(save_detection_img_path, frame):
                         # pro_frame = cv2.putText(pro_frame,'Unknown', (int(bounding_boxes[idx_row,0]), int(bounding_boxes[idx_row,1])), 
                         #                     cv2.FONT_HERSHEY_DUPLEX, 2, (0,255,0), 2, cv2.LINE_8)
                     
-            new_frame_time = time.time()
-            fps = 1/(new_frame_time-prev_frame_time)
-            prev_frame_time = new_frame_time
-            fps = str(int(fps))
-            print('fps', fps)
+
+def transform(image):
+        return transforms.Compose(
+            [
+                transforms.Resize((64, 64)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean = [0.5, 0.5, 0.5], std = [0.5, 0.5, 0.5])
+            ]
+        )(image)
 
 
-def detection_faces(frame, detector):
-    bounding_boxes, landmarks = detector(frame)
-    return bounding_boxes, landmarks
+def face_attributes(rotated_image):
+    """determines face attributes such as gender, age, emotions"""
+    global face_attributes_model
 
-if __name__ == "__main__":
+    face = cv2.resize(rotated_image,(64, 64), interpolation=cv2.INTER_AREA)
+    face = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
 
+    img_pil = Image.fromarray(face)
+    img = transform(img_pil)
+
+    with torch.no_grad():
+        genders, ages = face_attributes_model(img)
+        print(genders, ages)
+
+    genders = torch.round(genders)
+    ages = torch.round(ages).item()
+    label = "Man" if genders == 0 else "Woman"
+
+    return label, ages
+
+
+def main():
     parser = argparse.ArgumentParser(description='save detection images')
     parser.add_argument('--save_img_path', help='save all img')
     parser.add_argument('--save_detection_img_path', help='save all recognition img')
@@ -183,9 +209,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     SAVE_IMG_PATH = args.save_img_path
     SAVE_DETECTION_IMG_PATH = args.save_detection_img_path
-
-    prev_frame_time = 0
-    new_frame_time = 0
 
     # checking device
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -196,14 +219,21 @@ if __name__ == "__main__":
     detector  = RetinafaceDetector(net='mnet', type='cpu').detect_faces
 
     # recognition module
-    # face_rec = ArcFace.ArcFace()
-    global model
-    model = Backbone(num_layers=50, drop_ratio=0.5, mode='ir_se')
-    weights = torch.load("InsightFace_Pytorch/pretrained/model_ir_se50.pth", 
+    global recognition_model
+    recognition_model = Backbone(num_layers=50, drop_ratio=0.5, mode='ir_se')
+    recognition_weights = torch.load("pretrained/model_ir_se50.pth", 
                          map_location=torch.device('cpu'))
-    model.load_state_dict(weights)
-    model.cpu()
-    model.eval()
+    recognition_model.load_state_dict(recognition_weights)
+    recognition_model.cpu()
+    recognition_model.eval()
+
+    # faces attributes
+    global face_attributes_model
+    face_attributes_model = Model()
+    face_attributes_model.load_state_dict(torch.load("/home/minhthanh/directory_env/my_env/arcFace-retinaFace/pretrained/faces_attributes.pt",
+                                     map_location=torch.device("cpu")))
+    face_attributes_model.cpu()
+    face_attributes_model.eval()
 
     # set frame size
     cap = cv2.VideoCapture(0)
@@ -233,3 +263,7 @@ if __name__ == "__main__":
 
     cap.release()
     cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
